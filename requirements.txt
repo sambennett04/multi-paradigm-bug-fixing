@@ -1,1 +1,4 @@
-# Add project dependencies here.
+torch
+transformers
+datasets
+sentencepiece
