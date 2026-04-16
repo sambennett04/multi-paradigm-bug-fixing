@@ -1,4 +1,5 @@
 """Utilities for data loading and preprocessing."""
+from pathlib import Path
 from datasets import load_dataset
 
 def load_pretraining_data(n_samples = 50000, random_seed = 42, audit_sample_count = 3):
@@ -14,3 +15,14 @@ def load_pretraining_data(n_samples = 50000, random_seed = 42, audit_sample_coun
         print()
 
     return method_bodies
+
+def save_pretraining_data(pretraining_save_path, pretraining_methods):
+    save_path = Path(pretraining_save_path)
+    flattened_methods = []
+
+    for method in pretraining_methods:
+        flattened_method = " ".join(str(method).split())
+        flattened_methods.append(flattened_method)
+
+    save_path.write_text("\n".join(flattened_methods), encoding = "utf-8")
+    print(f"Pretraining methods saved to: {save_path}")
