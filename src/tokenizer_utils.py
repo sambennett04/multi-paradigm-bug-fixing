@@ -1,5 +1,11 @@
 """Utilities for tokenizer training and inference."""
 import sentencepiece as spm
+from tokenizers import Tokenizer
+from tokenizers.models import Unigram
+from tokenizers.pre_tokenizers import Metaspace
+from tokenizers.decoders import Metaspace as MetaspaceDecoder
+from transformers import PreTrainedTokenizerFast
+from pathlib import Path
 
 def train_tokenizer(corpus_file, model_prefix):
     """Trains a SentencePiece tokenizer on the given corpus and writes model and vocab files to location specified by provided model_prefix."""
@@ -20,5 +26,29 @@ def train_tokenizer(corpus_file, model_prefix):
         character_coverage=1.0,
     )
 
-def load_tokenizer():
-    pass
+def load_tokenizer(model_prefix):
+    model_path = model_prefix.with_suffix(".model")
+
+    #Load tokenizer using native SentencePiece runtime
+    sp = spm.SentencePieceProcessor()
+    sp.Load(model_path)
+
+    #Walks through every token in the SentencePiece model and extracts token string and token score (unigram model weights)
+    vocab = [(sp.IdToPiece(i), sp.GetScore(i)) for i in range(sp.GetPieceSize())]
+
+    #Reconstruct tokenizer as hugging face unigram model
+    tokenizer_obj = Tokenizer(Unigram(vocab, unk_id=2))
+    tokenizer_obj.pre_tokenizer = Metaspace()
+    tokenizer_obj.decoder = MetaspaceDecoder()
+
+    sentinel_tokens = [f"<extra_id_{i}>" for i in range(100)]
+
+    tokenizer = PreTrainedTokenizerFast(
+        tokenizer_object=tokenizer_obj,
+        eos_token="</s>",
+        unk_token="<unk>",
+        pad_token="<pad>",
+        additional_special_tokens=sentinel_tokens,
+    )
+
+    return tokenizer
