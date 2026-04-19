@@ -7,7 +7,7 @@ from tokenizers.decoders import Metaspace as MetaspaceDecoder
 from transformers import PreTrainedTokenizerFast
 from pathlib import Path
 
-def train_tokenizer(corpus_file, model_prefix):
+def train_tokenizer(corpus_file : Path, model_prefix : str):
     """Trains a SentencePiece tokenizer on the given corpus and writes model and vocab files to location specified by provided model_prefix."""
     sentinel_tokens = [f"<extra_id_{i}>" for i in range(100)]
     user_defined_symbols = ",".join(sentinel_tokens)
@@ -26,7 +26,7 @@ def train_tokenizer(corpus_file, model_prefix):
         character_coverage=1.0,
     )
 
-def load_tokenizer(model_prefix):
+def load_tokenizer(model_prefix : Path):
     model_path = model_prefix.with_suffix(".model")
 
     #Load tokenizer using native SentencePiece runtime
