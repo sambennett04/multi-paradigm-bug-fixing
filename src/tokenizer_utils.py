@@ -27,7 +27,7 @@ def train_tokenizer(corpus_file : Path, model_prefix : str):
     )
 
 def load_tokenizer(model_prefix : Path):
-    model_path = model_prefix.with_suffix(".model")
+    model_path = str(model_prefix.with_suffix(".model"))
 
     #Load tokenizer using native SentencePiece runtime
     sp = spm.SentencePieceProcessor()
