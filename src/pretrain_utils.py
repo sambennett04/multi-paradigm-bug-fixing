@@ -165,7 +165,7 @@ def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretr
 def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
 
     for epoch in range(pretrain_config.num_epochs):
-        pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretraining_config=pretrain_config)
+        pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretrain_config=pretrain_config)
 
         train_dataloader = DataLoader(
             pretraining_data,
