@@ -12,7 +12,8 @@ class PretrainConfig:
     corruption_rate: float = 0.15
     sentinel_ids: list[str] = field(default_factory=lambda: [f"<extra_id_{i}>" for i in range(100)]) #tells data class to call this function each time a new object is constructed, guaranteeing individual lists per PretrainConfig objects
     num_epochs: int = 3
-    device : str = "cuda"
+    batch_size: int = 8
+    device : str = "cuda" if torch.cuda.is_available() else "cpu"
 
 def filter_by_length(token_ids : list, pretrain_config : PretrainConfig):
     """filters out toknized methods (a set of token ids) with less than pretrain_config.min_tokens tokens and more then pretrain_config.max_tokens tokens"""
@@ -128,24 +129,24 @@ def pretrain_collate_fn(batch, pad_token_id):
     )
 
 
-def build_pretrain_dataset(raw_pretaining_methods : list[str], tokenizer, pretraining_config : PretrainConfig):
+def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretrain_config : PretrainConfig):
     """Build single epoch tokenized, span corrupted dataset"""
 
     #convert string sentinel tokens to their corresponding tokenizer token ids
-    sentinel_token_ids = tokenizer.convert_tokens_to_ids(pretraining_config.sentinel_ids)
+    sentinel_token_ids = tokenizer.convert_tokens_to_ids(pretrain_config.sentinel_ids)
     
     epoch_examples = []
-    for method in raw_pretaining_methods:
+    for method in raw_pretraining_methods:
         #tokenize method
         #add special tokens = False ensures no special tokens are added during this tokenization, guaranteeing span corruptions is done on just raw method tokens
         token_ids = tokenizer.encode(method, add_special_tokens=False)
 
         #include in dataset if num tokens in between 10 and 512
-        if filter_by_length(token_ids=token_ids,pretrain_config=pretraining_config):
+        if filter_by_length(token_ids=token_ids,pretrain_config=pretrain_config):
             corrupted_input_ids, corrupted_target_ids = apply_span_corruption(
                 token_ids=token_ids,
                 sentinel_token_ids=sentinel_token_ids,
-                pretrain_config=pretraining_config,
+                pretrain_config=pretrain_config,
             )
             
             input_ids = corrupted_input_ids + [tokenizer.eos_token_id]
@@ -161,21 +162,18 @@ def build_pretrain_dataset(raw_pretaining_methods : list[str], tokenizer, pretra
     return epoch_examples
 
 
-def evaluate_model_during_pretraining(model, eval_dataloader, pretrain_config : PretrainConfig):
-    model.eval()
-    eval_loss, num_batches = 0.0, 0
-    with torch.no_grad():
-        for batch in eval_dataloader:
-            input_ids, attention_mask, labels = [x.to(pretrain_config.device) for x in batch]
-            outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
-            eval_loss += outputs.loss.item()
-            num_batches += 1
-    return round(eval_loss / num_batches, 5)
-
-def run_pretraining(model, train_dataloader, eval_dataloader, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
-    best_loss = float("inf")
+def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
 
     for epoch in range(pretrain_config.num_epochs):
+        pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretraining_config=pretrain_config)
+
+        train_dataloader = DataLoader(
+            pretraining_data,
+            batch_size=pretrain_config.batch_size,
+            shuffle=True,
+            collate_fn=lambda batch: pretrain_collate_fn(batch, tokenizer.pad_token_id),
+        )
+
         model.train()
         tr_loss, tr_steps = 0.0, 0
 
@@ -196,11 +194,9 @@ def run_pretraining(model, train_dataloader, eval_dataloader, optimizer, tokeniz
             tr_steps += 1
 
         train_loss = round(tr_loss / tr_steps, 5)
-        eval_loss = evaluate_model_during_pretraining(model, eval_dataloader, pretrain_config)
+        print(f"Epoch {epoch + 1}: train_loss = {train_loss}")
 
-        if eval_loss < best_loss:
-            best_loss = eval_loss
-            model_to_save = model.module if hasattr(model, "module") else model
-            model_to_save.save_pretrained(pretrain_config.output_dir)
-            tokenizer.save_pretrained(pretrain_config.output_dir)
+    model_to_save = model.module if hasattr(model, "module") else model
+    model_to_save.save_pretrained(pretrain_config.output_dir)
+    #tokenizer.save_pretrained(pretrain_config.output_dir) [optional save tokenizer again]
         
