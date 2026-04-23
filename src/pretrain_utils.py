@@ -3,6 +3,7 @@ from dataclasses import dataclass, field
 import random
 import torch
 from torch.utils.data import DataLoader
+from tqdm.auto import tqdm
 
 @dataclass
 class PretrainConfig:
@@ -164,7 +165,7 @@ def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretr
 
 def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
 
-    for epoch in range(pretrain_config.num_epochs):
+    for epoch in tqdm(range(pretrain_config.num_epochs), desc="Pretraining epochs"):
         pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretrain_config=pretrain_config)
 
         train_dataloader = DataLoader(
@@ -177,7 +178,8 @@ def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, token
         model.train()
         tr_loss, tr_steps = 0.0, 0
 
-        for step, batch in enumerate(train_dataloader):
+        batch_bar = tqdm(train_dataloader, desc=f"Epoch {epoch + 1}", leave=False)
+        for batch in batch_bar:
             input_ids, attention_mask, labels = [x.to(pretrain_config.device) for x in batch]
 
             outputs = model(input_ids=input_ids, attention_mask=attention_mask, labels=labels)
@@ -192,6 +194,7 @@ def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, token
 
             tr_loss += loss.item()
             tr_steps += 1
+            batch_bar.set_postfix(loss=round(loss.item(), 4))
 
         train_loss = round(tr_loss / tr_steps, 5)
         print(f"Epoch {epoch + 1}: train_loss = {train_loss}")
