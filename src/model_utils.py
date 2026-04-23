@@ -1,9 +1,6 @@
 """Utilities for model construction and loading."""
 from transformers import T5Config, T5ForConditionalGeneration
 
-def filter_by_length(tokenized_methods):
-    """filters out toknized methods with less than 10 tokens and more then 512 tokens"""
-
 def build_t5_model(tokenizer, embd_hidd_dim, feed_forward_dim, key_val_proj_dim, num_heads, num_encoder_layers, num_decoder_layers):
     """Initalize t5 model using given parameters"""
     t5_config = T5Config(
