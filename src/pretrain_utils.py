@@ -12,6 +12,7 @@ class PretrainConfig:
     max_tokens: int = 512
     corruption_rate: float = 0.15
     sentinel_ids: list[str] = field(default_factory=lambda: [f"<extra_id_{i}>" for i in range(100)]) #tells data class to call this function each time a new object is constructed, guaranteeing individual lists per PretrainConfig objects
+    max_samples: int | None = None
     num_epochs: int = 3
     batch_size: int = 8
     device : str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -164,8 +165,11 @@ def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretr
 
 
 def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
+    if pretrain_config.max_samples is not None:
+        raw_pretraining_methods = raw_pretraining_methods[:pretrain_config.max_samples]
 
     for epoch in tqdm(range(pretrain_config.num_epochs), desc="Pretraining epochs"):
+        #rebuilding span corrupted data each time allows our pretrained model to learn more general language behavior/structure from the corpus
         pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretrain_config=pretrain_config)
 
         train_dataloader = DataLoader(

@@ -12,6 +12,8 @@ class FinetuneConfig:
     max_input_len: int = 512 
     max_target_len: int = 512 
 
+    max_train_samples: int | None = None
+    max_val_samples: int | None = None
     num_epochs: int = 3
     batch_size: int = 8
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
@@ -87,6 +89,11 @@ def evaluate_model(model, val_dataloader, device):
     return round(eval_loss / num_batches, 5)
 
 def run_finetuning(train_pairs, val_pairs, model, optimizer, tokenizer, scheduler, finetune_config):
+    if finetune_config.max_train_samples is not None:
+        train_pairs = train_pairs[:finetune_config.max_train_samples]
+    if finetune_config.max_val_samples is not None:
+        val_pairs = val_pairs[:finetune_config.max_val_samples]
+
     train_data = build_finetune_dataset(train_pairs, tokenizer, finetune_config)
     val_data = build_finetune_dataset(val_pairs, tokenizer, finetune_config)
 
