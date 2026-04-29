@@ -1,29 +1,16 @@
 # multi_paradigm_bug_fixing
 
-Repository scaffold for the multi-paradigm bug fixing project.
+## Set Up
+The runtime of the project is contained within the [notebooks/multi_paradigm_bug_fixing.ipynb](notebooks/multi_paradigm_bug_fixing.ipynb) notebook file. All you need to do to get it working is to download it from the /notebooks folder and upload it to Google Colab. The following steps run automatically at the beginning of the notebook, but are something to watch out for:
+1. Clone of mutli-paradigm-bug-fixing-repo
+2. Installation of Dependencies
+3. Mounting Google Drive to Store Outputs (you must manually accept the permissions pop-up)
 
-## Dependencies
+## Executing the Code
+Just run the cells sequentially from the top to the bottom. Earlier cells have skip if present logic and all model cells save their workloads to output files for quick restarting. However,  Finetuning and Evaluation must be run together in the current state of the notebook, I did not have time to setup of the reloading logic, but it is simple to do if needed.
 
-Install the Python requirements before running the notebooks or `src` utilities:
 
-```bash
-pip install -r requirements.txt
-```
+## Want to learn more?
+Look into the [REPO_GUIDE.md](REPO_GUIDE.md)
 
-The retrieval utilities in [src/llm_utils.py](/Users/sambennett/Desktop/CSCI555/multi_paradigm_bug_fixing/src/llm_utils.py:1) now use `tree-sitter-languages` for Java parsing instead of the direct `tree-sitter-java` binding. `tree-sitter` is pinned to `0.21.3` in [requirements.txt](/Users/sambennett/Desktop/CSCI555/multi_paradigm_bug_fixing/requirements.txt:1) because newer Python bindings are incompatible with the current `tree_sitter_languages` parser helper. `codebleu` is also pinned to `0.3.0` to avoid source-build failures on Colab's Python 3.12 runtime.
 
-The module initializes a shared Java parser at import time:
-
-```python
-from tree_sitter_languages import get_parser
-
-JAVA_PARSER = get_parser("java")
-```
-
-If you are working in a notebook and want the same parser behavior locally, use the same pattern in a cell:
-
-```python
-from tree_sitter_languages import get_parser
-
-java_parser = get_parser("java")
-```

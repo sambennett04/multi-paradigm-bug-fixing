@@ -1,0 +1,107 @@
+\documentclass[11pt]{article}
+\usepackage[margin=1in]{geometry}
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage{hyperref}
+\usepackage{enumitem}
+\usepackage{parskip}
+
+\title{Multi-Paradigm Bug Fixing Report Draft}
+\author{Sam Bennett}
+\date{04/29/2026}
+
+\begin{document}
+\maketitle
+
+\section{Data Sources}
+This project uses two main data sources from Hugging Face.
+
+\subsection{CodeSearchNet}
+CodeSearchNet is used for unsupervised pretraining. 50{,}000 methods are extracted from the \texttt{whole\_func\_string} fields of a random sample of CodeSearchNet rows. They are stored one flattened method per line in a text file. This format is compatible with SentencePiece tokenizer training and facilitates later span-corruption pretraining.
+
+\subsection{CodeXGLUE}
+CodeXGLUE is used for supervised bug-fixing experiments. The project loads the \texttt{google/code\_x\_glue\_cc\_code\_refinement} dataset with the \texttt{medium} configuration and uses the train, validation, and test splits. Each example is represented as a pair of Java methods: a buggy version and its corrected version. These pairs are used for T5 fine-tuning (train + validation), constructing the retrieval knowledge base (train), and final evaluation (test).
+
+\section{Models Used}
+\subsection{T5}
+T5 is an encoder-decoder Transformer designed for text-to-text learning, where every task is expressed as sequence generation. That framing fits program repair naturally because buggy code can be treated as an input sequence and the corrected code can be treated as the output sequence.
+
+In this project, T5 is initialized from scratch, rather than loaded from a public checkpoint, and used to build two identical "fresh" T5 models. 
+The configuration is:
+\begin{itemize}[leftmargin=*]
+\item embedding/hidden dimension \texttt{d\_model = 512}
+\item feed-forward dimension \texttt{d\_ff = 2048}
+\item key/value projection dimension \texttt{d\_kv = 64}
+\item \texttt{8} attention heads
+\item \texttt{6} encoder layers
+\item \texttt{6} decoder layers
+\item vocabulary size matched to the trained tokenizer
+\item decoder start token set to the tokenizer pad token
+\end{itemize}
+This is effectively a T5-small-scale architecture, but adapted to a custom Java tokenizer.
+
+\subsection{Qwen}
+The second model family is Qwen, used for decoder-only code generation experiments. The implementation loads \texttt{Qwen/Qwen2.5-Coder-1.5B-Instruct}, which is an instruction-tuned causal language model with roughly 1.5 billion parameters. Unlike the T5 pipeline, Qwen is not trained further in this repository. Instead, it is evaluated in two inference settings: zero-shot prompting and retrieval-augmented generation (RAG).
+
+The notebook configures Qwen with notebook-friendly settings: automatic device placement, \texttt{bfloat16} on GPU when available, left padding, \texttt{temperature = 0.0}, \texttt{num\_samples = 1}, and \texttt{max\_new\_tokens = 512}. This makes Qwen a strong instruction-following baseline for comparison against the custom T5 models.
+
+\section{Training the Tokenizer}
+The tokenizer is trained with SentencePiece, which is a subword tokenization framework that learns a vocabulary directly from raw text. At a high level, SentencePiece is useful because it avoids hand-written lexical rules and can learn reusable subword units for identifiers, keywords, punctuation, and common code fragments. This is especially helpful for source code, where variable names and method names can be highly diverse.
+
+My implementation trains a unigram SentencePiece model over the flattened Java methods collected from CodeSearchNet. The training configuration uses a target vocabulary size of \texttt{16,384}, full character coverage, and \texttt{hard\_vocab\_limit=False} so the trainer can slightly relax the exact vocabulary target if needed. Special token IDs are assigned explicitly: \texttt{<pad>} is ID 0, \texttt{</s>} is ID 1, and \texttt{<unk>} is ID 2. No beginning-of-sequence token is used, which matches the standard T5 setup.
+
+An important implementation detail is support for T5 sentinel tokens. During tokenizer training, the code registers \texttt{<extra\_id\_0>} through \texttt{<extra\_id\_99>} as user-defined symbols so that span-corruption pretraining can replace masked spans with unique sentinels. After training, the SentencePiece model is reloaded and converted into a Hugging Face \texttt{PreTrainedTokenizerFast} object using a unigram tokenizer backend, a metaspace pre-tokenizer, and a metaspace decoder. This makes the tokenizer compatible with the rest of the Transformer pipeline while preserving the SentencePiece vocabulary.
+
+\section{Pretraining}
+\subsection{Span Corruption}
+The pretraining objective follows T5 span corruption. Instead of masking isolated tokens independently, the method samples a subset of token positions and groups consecutive masked positions into spans. Each span is then replaced in the input with a sentinel token such as \texttt{<extra\_id\_0>}. The target sequence contains the removed content in order preceded by corresponding sentinel token. This objective encourages the model to reconstruct missing code fragments from surrounding context rather than simply predict one local token at a time.
+
+\subsection{My Pretraining Implementation}
+The implementation first tokenizes each Java method without adding special tokens. It filters out methods shorter than 10 tokens or longer than 512 tokens, then applies a corruption rate of 15\%. The selected masked positions are grouped into contiguous spans, and each span is assigned a sentinel ID. The corrupted input is built by replacing each masked span with one sentinel token, while the target is built by concatenating each sentinel token with the original tokens from its masked span. An end-of-sequence token is appended to both input and target.
+
+The project rebuilds the corrupted dataset at the start of every epoch instead of reusing one fixed masking pattern. This is an important design choice because it exposes the model to multiple corruptions of the same method across training, which should improve generalization. Batch construction uses dynamic padding, attention masks for the padded inputs, and label masking with \texttt{-100} so padded target positions do not contribute to the loss.
+
+Pretraining is run for 3 epochs with batch size 8, AdamW optimization, learning rate \texttt{5e-4}, weight decay \texttt{0.01} and linear learning-rate decay with no warmup.
+
+\section{Finetuning}
+Fine-tuning adapts the T5 model from general code reconstruction to the specific task of bug fixing. Each training example from CodeXGLUE is converted into a text-to-text pair where the source is the buggy method prefixed with \texttt{fix bug:} and the target is the corrected method. This follows the standard T5 idea of expressing tasks as prompted generation problems.
+
+My implementation tokenizes both the source and target with truncation and appends an end-of-sequence token. I use maximum input and target lengths of 512 tokens, so the tokenizer truncates to 511 content tokens and reserves the final position for \texttt{</s>}. This max lengths are consistent with the sequence lengths that were used to train t5 models originally (sources: \href{https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602}https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602, \href{https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602}https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602). The collate function performs dynamic batch padding and replaces padded label positions with \texttt{-100} so the Hugging Face loss function ignores them.
+
+Training uses the same optimizer family as pretraining: AdamW with learning rate \texttt{5e-4}, weight decay \texttt{0.01}, gradient clipping at norm 1.0, and a linear schedule with no warmup. Validation loss is computed after each epoch, and the best checkpoint is saved. 
+
+\section{RAG}
+ My RAG implementation is used to augment generation with retrieved bug-fix examples. In this project, retrieval is built over the CodeXGLUE training pairs, so the system can look up similar buggy methods and show their corrected versions as in-context examples before asking Qwen to repair a new method.
+
+My implementation is  code structure-aware. It first parses each buggy Java method with Tree-sitter after wrapping the method inside a dummy class so that method snippets can be parsed as valid Java (this is an interesting trick). A depth-first traversal collects AST node types, producing one structural token sequence per method. These AST node sequences are then used to train a skip-gram Word2Vec model, giving a lightweight Code2Vec-style embedding space. To embed a single method, the code mean-pools the vectors for its AST node types.
+
+The resulting embeddings are indexed with FAISS using an exact \texttt{IndexFlatL2} index. At inference time, the query buggy method is parsed, embedded into the vector space, and used to retrieve the top 3 nearest training examples. The prompt builder then formats these retrieved examples as buggy/fixed Java pairs and appends the new buggy method below them. The generator is instructed to return only corrected Java code. In this way, retrieval provides explicit repair patterns that may help Qwen imitate transformations already seen in similar examples.
+
+\section{Experimental Configurations}
+
+All major experiments use random seed 42 for reproducibility. The custom tokenizer is trained once on CodeSearchNet Java and reused across both T5 pipelines. The notebook is structured around persistent output directories for the tokenizer, pretrained model, two fine-tuned T5 checkpoints, the knowledge base, predictions, and final results. Intermediate results can be reviewed in these directories at any point during execution of the notebook. 
+
+There are four configurations tested in this repository:
+\begin{enumerate}
+    \item Fresh T5 + Finetuning
+    \item Pretrained T5 + Finetuning
+    \item Zero-Shot QWEN
+    \item RAG QWEN
+\end{enumerate}
+
+\section{Evaluation Protocol}
+All combinations are evaluated on the CodeXGLUE test set:
+
+For the T5 models, each buggy method is converted into the prompt \texttt{fix bug: <buggy\_code>} and passed to \texttt{generate}. For Qwen, the repository uses a shared generation helper, that executes prompts on QWEN with or without retrieved examples injected into the prompt based on a set mode. 
+
+The notebook computes two evaluation metrics:
+\begin{itemize}[leftmargin=*]
+\item \textbf{Exact Match}: whether the predicted method exactly matches the fixed  after stripping whitespace at the ends.
+\item \textbf{CodeBLEU}: a code-aware generation metric computed with \texttt{lang="java"}.
+\end{itemize}
+The final results table is sorted in descending order by Exact Match and CodeBLEU, then exported as a CSV file. Predictions and Results are stored to respective folders within the mounted Google Drive denoted by the notebook.
+
+\section{Results}
+In progress, will be reported as soon as evaluation run finishes.
+
+\end{document}

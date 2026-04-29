@@ -1,4 +1,4 @@
-"""Utilities for finetuning workflows."""
+"""Utilities for supervised T5 bug-fixing fine-tuning."""
 from dataclasses import dataclass
 import torch
 from torch.utils.data import DataLoader
@@ -6,9 +6,10 @@ from tqdm.auto import tqdm
 
 @dataclass
 class FinetuneConfig:
+    """Configuration for seq2seq fine-tuning on buggy/fixed code pairs."""
     output_dir: str
 
-    #T5 was mostly trained with sequences of 512 input tokens so we replicate the same here soruces (https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602, https://discuss.huggingface.co/t/does-t5-truncate-input-longer-than-512-internally/3602)
+    # Mirror the common T5 512-token training regime for both source and target.
     max_input_len: int = 512 
     max_target_len: int = 512 
 
@@ -18,7 +19,9 @@ class FinetuneConfig:
     batch_size: int = 8
     device: str = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def finetune_collate_fn(batch, pad_token_id):
+    """Pad one supervised batch and mask label padding for loss computation."""
     max_input_len = max(len(example["input_ids"]) for example in batch)
     max_label_len = max(len(example["labels"]) for example in batch)
 
@@ -48,14 +51,17 @@ def finetune_collate_fn(batch, pad_token_id):
         torch.tensor(batch_labels, dtype=torch.long),
     )
 
+
 def build_finetune_dataset(example_pairs, tokenizer, finetune_config):
+    """Convert buggy/fixed code pairs into T5-style source/target examples."""
     dataset = []
 
     for buggy_code, fixed_code in example_pairs:
+        # The task prefix keeps the training format aligned with T5's
+        # text-to-text formulation.
         source_text = f"fix bug: {buggy_code}"
 
-        #encode buggy methods --> input_ids and fixed methods --> labels
-        #Here we truncate tokenized sequences to match t5s 512 training sequence length
+        # Reserve one token slot for EOS after truncation.
         input_ids = tokenizer.encode(
             source_text,
             add_special_tokens=False,
@@ -77,7 +83,9 @@ def build_finetune_dataset(example_pairs, tokenizer, finetune_config):
 
     return dataset
 
+
 def evaluate_model(model, val_dataloader, device):
+    """Compute average validation loss for one full validation pass."""
     model.eval()
     eval_loss, num_batches = 0.0, 0
     with torch.no_grad():
@@ -88,7 +96,9 @@ def evaluate_model(model, val_dataloader, device):
             num_batches += 1
     return round(eval_loss / num_batches, 5)
 
+
 def run_finetuning(train_pairs, val_pairs, model, optimizer, tokenizer, scheduler, finetune_config):
+    """Run supervised fine-tuning and save the best validation checkpoint."""
     if finetune_config.max_train_samples is not None:
         train_pairs = train_pairs[:finetune_config.max_train_samples]
     if finetune_config.max_val_samples is not None:
@@ -105,11 +115,9 @@ def run_finetuning(train_pairs, val_pairs, model, optimizer, tokenizer, schedule
         collate_fn=lambda batch: finetune_collate_fn(batch, tokenizer.pad_token_id),
     )
 
-    #Error if val_pairs are empty, if empty val_pairs included could cause division by zero in validation
     if not val_pairs:
         raise ValueError("Missing val_pairs")
 
-    #build validation data loader
     val_dataloader = DataLoader(
         val_data,
         batch_size=finetune_config.batch_size,
@@ -133,22 +141,14 @@ def run_finetuning(train_pairs, val_pairs, model, optimizer, tokenizer, schedule
                 labels=labels,
             )
             
-            #calculate batch loss
             loss = outputs.loss
-            
-            #run back propogation
             loss.backward()
 
-            #prevent exploding gradients (normalized betwen 0 - 1)
+            # Keep training stable when gradients spike on long code sequences.
             torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
 
-            #update model weights using current gradients
             optimizer.step()
-
-            #update learning rate according to schedule
             scheduler.step()
-
-            #clears accumulated gradients from this step
             optimizer.zero_grad()
 
             tr_loss += loss.item()
@@ -164,4 +164,4 @@ def run_finetuning(train_pairs, val_pairs, model, optimizer, tokenizer, schedule
             best_loss = eval_loss
             model_to_save = model.module if hasattr(model, "module") else model
             model_to_save.save_pretrained(finetune_config.output_dir)
-            #tokenizer.save_pretrained(finetune_config.output_dir)
+            # tokenizer.save_pretrained(finetune_config.output_dir)

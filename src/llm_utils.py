@@ -1,4 +1,4 @@
-"""Utilities for retrieval-augmented generation and zero-shot qwen workflows."""
+"""Helpers for retrieval-augmented and zero-shot Qwen code generation."""
 
 from __future__ import annotations
 
@@ -66,7 +66,7 @@ def _extract_ast_nodes_with_parser(code: str, java_parser: Parser) -> list[str] 
 
 
 def _prepare_training_records(raw_corpus: list[list[str]]) -> tuple[list[dict[str, Any]], int]:
-    """Normalize raw buggy/fixed pairs and pre-parse buggy code ASTs."""
+    """Normalize buggy/fixed pairs and retain only parseable buggy methods."""
     prepared_records: list[dict[str, Any]] = []
     skipped_count = 0
 
@@ -187,6 +187,8 @@ def train_embedding_model_and_generate_embeddings(
     retained_records: list[dict[str, Any]] = []
     embeddings_list: list[np.ndarray] = []
     for index, record in enumerate(prepared_records):
+        # Re-encode one record at a time so we can drop examples that still fail
+        # after training, while keeping metadata aligned with the FAISS rows.
         pooled = embedder._mean_pool_ast_nodes(record["ast_nodes"])
         if pooled is None:
             _warn_on_skipped_record(index, "buggy method produced no in-vocabulary AST nodes after training")
@@ -312,6 +314,7 @@ def _retrieve_samples(query: str, llm_config: LLMConfig) -> list[dict[str, Any]]
                 "buggy": item["buggy"],
                 "fixed": item["fixed"],
                 "language": item.get("language", "java"),
+                # Convert smaller L2 distances into an easy-to-read score.
                 "similarity": 1 / (1 + float(distance)),
             }
         )
@@ -352,6 +355,8 @@ def _build_prompt(user_task: str, tokenizer: Any, rag_context: str = "") -> str:
         {"role": "user", "content": user_content},
     ]
 
+    # Prefer the model's native chat template when available so tokenization
+    # matches how the instruction-tuned checkpoint was trained.
     if hasattr(tokenizer, "apply_chat_template"):
         return tokenizer.apply_chat_template(chat, tokenize=False, add_generation_prompt=True)
 
@@ -389,11 +394,13 @@ def load_qwen_generator(model_name: str = "Qwen/Qwen2.5-Coder-1.5B-Instruct") ->
 
     model_kwargs: dict[str, Any] = {"device_map": "auto", "trust_remote_code": True}
     if torch.cuda.is_available():
+        # bfloat16 substantially reduces memory pressure on Colab-style GPUs.
         model_kwargs["torch_dtype"] = torch.bfloat16
 
     model = AutoModelForCausalLM.from_pretrained(model_name, **model_kwargs)
 
     if tokenizer.pad_token is None:
+        # Generation helpers need a valid pad token even for decoder-only models.
         tokenizer.pad_token = tokenizer.eos_token
     tokenizer.padding_side = "left"
 
@@ -418,6 +425,8 @@ def generate_code(user_task: str, llm_config: LLMConfig, mode: Literal["zero_sho
     ).to(device)
     input_length = inputs["input_ids"].shape[1]
 
+    # We slice off the prompt tokens after generation so only newly generated
+    # code is decoded and returned to the caller.
     generation_kwargs: dict[str, Any] = {
         **inputs,
         "max_new_tokens": llm_config.max_new_tokens,

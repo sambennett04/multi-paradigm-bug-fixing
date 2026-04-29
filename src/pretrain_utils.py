@@ -1,4 +1,4 @@
-"""Utilities for model pretraining workflows."""
+"""Utilities for T5-style span-corruption pretraining."""
 from dataclasses import dataclass, field
 import random
 import torch
@@ -7,23 +7,28 @@ from tqdm.auto import tqdm
 
 @dataclass
 class PretrainConfig:
+    """Configuration for unsupervised code pretraining."""
     output_dir : str
     min_tokens: int = 10
     max_tokens: int = 512
     corruption_rate: float = 0.15
-    sentinel_ids: list[str] = field(default_factory=lambda: [f"<extra_id_{i}>" for i in range(100)]) #tells data class to call this function each time a new object is constructed, guaranteeing individual lists per PretrainConfig objects
+    sentinel_ids: list[str] = field(
+        default_factory=lambda: [f"<extra_id_{i}>" for i in range(100)]
+    )
     max_samples: int | None = None
     num_epochs: int = 3
     batch_size: int = 8
     device : str = "cuda" if torch.cuda.is_available() else "cpu"
 
+
 def filter_by_length(token_ids : list, pretrain_config : PretrainConfig):
-    """filters out toknized methods (a set of token ids) with less than pretrain_config.min_tokens tokens and more then pretrain_config.max_tokens tokens"""
+    """Keep only examples within the configured token-length bounds."""
     return pretrain_config.min_tokens <= len(token_ids) <= pretrain_config.max_tokens
 
+
 def initialize_spans(n_tokens : int, pretrain_config : PretrainConfig):
-    """Select random positions from 0-n_tokens and grpup consecutreive ones into spans"""
-    n_mask = max(1, int(n_tokens * pretrain_config.corruption_rate))  # 15%
+    """Sample masked token positions and collapse adjacent positions into spans."""
+    n_mask = max(1, int(n_tokens * pretrain_config.corruption_rate))
     mask_indices = sorted(random.sample(range(n_tokens), n_mask))
 
     spans = []
@@ -38,12 +43,13 @@ def initialize_spans(n_tokens : int, pretrain_config : PretrainConfig):
 
     return spans
 
+
 def build_corrupted_input_and_target(spans : list, token_ids : list, sentinel_token_ids : list):
-    """Use randomly generated spans to create pretraing input and output for one tokenized method """
-    #fetch all masked positions
+    """Build one T5 span-corruption training pair from tokenized code."""
+    # Flatten span coordinates so membership checks are cheap while rewriting.
     mask_set = {masked_pos for span in spans for masked_pos in span} 
 
-    #map each masked position to is span index
+    # Track which sentinel token should replace each masked token position.
     span_map = {}
     for span_idx in range(len(spans)):
         curr_span = spans[span_idx]
@@ -63,7 +69,8 @@ def build_corrupted_input_and_target(spans : list, token_ids : list, sentinel_to
             input_ids.append(tid)
             prev_span_idx = -1
 
-    # Target: sentinel followed by the span's original tokens
+    # The decoder target is the concatenation of removed spans, each prefixed
+    # by the same sentinel that marked its location in the encoder input.
     target_ids = []
     for span_idx, span in enumerate(spans):
         target_ids.append(sentinel_token_ids[span_idx])
@@ -73,57 +80,42 @@ def build_corrupted_input_and_target(spans : list, token_ids : list, sentinel_to
     return input_ids, target_ids
 
 def apply_span_corruption(token_ids, sentinel_token_ids, pretrain_config : PretrainConfig):
-    """Apply span corruption to one tokenized method from raw pretraining data and return pretraining input and target"""
+    """Apply T5 span corruption and return encoder/decoder token sequences."""
     spans = initialize_spans(n_tokens=len(token_ids), pretrain_config=pretrain_config)
     input_ids, target_ids = build_corrupted_input_and_target(spans = spans, token_ids = token_ids, sentinel_token_ids=sentinel_token_ids)
     return input_ids, target_ids
 
 
 def pretrain_collate_fn(batch, pad_token_id):
-    """
-        Apply padding to input_ids and labels and calculate attention mask for one batch of unpadded token_ids (tokenized methods). 
-        Facilitates dynamic example padding at batch time.
-    """
-    #calculate max input and label examples so we can pad all other examples up to their lengths
+    """Pad one pretraining batch and mask padded labels for seq2seq loss."""
     max_input_len = max(len(example["input_ids"]) for example in batch)
     max_label_len = max(len(example["labels"]) for example in batch)
 
-    #for one batch: 
-    batch_input_ids = [] #padded input_ids
-    batch_attention_mask = [] #attention mask 
-    batch_labels = [] #padded labels with with -100 for pad tokens so hugging face loss func ignores
+    batch_input_ids = []
+    batch_attention_mask = []
+    batch_labels = []
 
     for example in batch:
-        #extract input_ids and labels from example object
         input_ids = example["input_ids"]
         labels = example["labels"]
 
-        #decide how much padding each needs
         input_pad_len = max_input_len - len(input_ids)
         label_pad_len = max_label_len - len(labels)
 
-        #apply padding to input_ids
         padded_input_ids = input_ids + [pad_token_id] * input_pad_len
-
-        #compute attention_mask on padded input_ids
         attention_mask = [1] * len(input_ids) + [0] * input_pad_len
-
-        #apply padding to labels
         padded_labels = labels + [pad_token_id] * label_pad_len
 
-        #replace all padded tokens in target with -100, so that loss function ignores missed prediction on pad tokens, ensuring model is not trained to predict padding
+        # Hugging Face seq2seq losses ignore label positions set to -100.
         masked_labels = [
             token if token != pad_token_id else -100
             for token in padded_labels
         ]
 
-        #populate batch components
         batch_input_ids.append(padded_input_ids)
         batch_attention_mask.append(attention_mask)
         batch_labels.append(masked_labels)
 
-    #return tensor (of rank 2 -> matrix) of each batch component
-    #note each tensor is stacks of individual example components (input_ids, attention_mask, labels)
     return (
         torch.tensor(batch_input_ids, dtype=torch.long),
         torch.tensor(batch_attention_mask, dtype=torch.long),
@@ -132,18 +124,16 @@ def pretrain_collate_fn(batch, pad_token_id):
 
 
 def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretrain_config : PretrainConfig):
-    """Build single epoch tokenized, span corrupted dataset"""
+    """Tokenize raw methods and materialize one epoch of corrupted examples."""
 
-    #convert string sentinel tokens to their corresponding tokenizer token ids
+    # Resolve all sentinel IDs once to avoid repeated string-to-id lookups.
     sentinel_token_ids = tokenizer.convert_tokens_to_ids(pretrain_config.sentinel_ids)
     
     epoch_examples = []
     for method in raw_pretraining_methods:
-        #tokenize method
-        #add special tokens = False ensures no special tokens are added during this tokenization, guaranteeing span corruptions is done on just raw method tokens
+        # Corruption should operate on raw method content, not on EOS/pad tokens.
         token_ids = tokenizer.encode(method, add_special_tokens=False)
 
-        #include in dataset if num tokens in between 10 and 512
         if filter_by_length(token_ids=token_ids,pretrain_config=pretrain_config):
             corrupted_input_ids, corrupted_target_ids = apply_span_corruption(
                 token_ids=token_ids,
@@ -165,11 +155,13 @@ def build_pretrain_dataset(raw_pretraining_methods : list[str], tokenizer, pretr
 
 
 def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, tokenizer, scheduler, pretrain_config : PretrainConfig):
+    """Run multi-epoch unsupervised pretraining and save the final checkpoint."""
     if pretrain_config.max_samples is not None:
         raw_pretraining_methods = raw_pretraining_methods[:pretrain_config.max_samples]
 
     for epoch in tqdm(range(pretrain_config.num_epochs), desc="Pretraining epochs"):
-        #rebuilding span corrupted data each time allows our pretrained model to learn more general language behavior/structure from the corpus
+        # Rebuild masking every epoch so the model sees different corruptions of
+        # the same code instead of memorizing one fixed mask pattern.
         pretraining_data = build_pretrain_dataset(raw_pretraining_methods=raw_pretraining_methods, tokenizer=tokenizer, pretrain_config=pretrain_config)
 
         train_dataloader = DataLoader(
@@ -205,5 +197,5 @@ def run_pretraining(raw_pretraining_methods : list[str], model, optimizer, token
 
     model_to_save = model.module if hasattr(model, "module") else model
     model_to_save.save_pretrained(pretrain_config.output_dir)
-    #tokenizer.save_pretrained(pretrain_config.output_dir) [optional save tokenizer again]
+    # tokenizer.save_pretrained(pretrain_config.output_dir)
         
