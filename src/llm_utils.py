@@ -45,7 +45,10 @@ def _extract_ast_nodes(code: str) -> list[str] | None:
 def _extract_ast_nodes_with_parser(code: str, java_parser: Parser) -> list[str] | None:
     """Parse Java code into an AST node-type sequence with a provided parser."""
     try:
-        tree = java_parser.parse(code.encode("utf-8"))
+        # CodeXGLUE refinement entries are method snippets, not full Java files.
+        # Wrap each snippet in a dummy class so tree-sitter can parse it as valid Java structure.
+        wrapped_code = f"class DummyWrapper {{\n{code}\n}}"
+        tree = java_parser.parse(wrapped_code.encode("utf-8"))
         root = tree.root_node
     except Exception:
         return None
