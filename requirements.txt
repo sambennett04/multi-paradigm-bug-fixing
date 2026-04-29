@@ -6,5 +6,5 @@ tokenizers
 faiss-cpu
 gensim
 tree-sitter
-tree-sitter-language-pack
+tree-sitter-languages
 codebleu

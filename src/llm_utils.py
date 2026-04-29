@@ -15,7 +15,7 @@ import numpy as np
 import torch
 from gensim.models import Word2Vec
 from tree_sitter import Parser
-from tree_sitter_language_pack import get_parser
+from tree_sitter_languages import get_parser
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
 
