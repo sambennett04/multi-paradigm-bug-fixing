@@ -14,18 +14,12 @@ import faiss
 import numpy as np
 import torch
 from gensim.models import Word2Vec
+from tree_sitter import Parser
+from tree_sitter_language_pack import get_parser
 from transformers import AutoModelForCausalLM, AutoTokenizer
 
-from tree_sitter import Language, Parser
-import tree_sitter_java as tsjava
 
-
-def _build_java_parser() -> Parser:
-    """Create a Java parser instance for AST extraction."""
-    java_language = tsjava.language()
-    parser = Parser()
-    parser.language = java_language
-    return parser
+JAVA_PARSER: Parser = get_parser("java")
 
 
 def _warn_on_skipped_record(index: int, reason: str) -> None:
@@ -39,7 +33,7 @@ def _warn_on_skipped_record(index: int, reason: str) -> None:
 
 def _extract_ast_nodes(code: str) -> list[str] | None:
     """Parse Java code into an AST node-type sequence."""
-    return _extract_ast_nodes_with_parser(code, _build_java_parser())
+    return _extract_ast_nodes_with_parser(code, JAVA_PARSER)
 
 
 def _extract_ast_nodes_with_parser(code: str, java_parser: Parser) -> list[str] | None:
@@ -111,7 +105,7 @@ class Code2VecEmbedder:
         self.epochs = epochs
         self.model: Word2Vec | None = None
         self.num_skipped = 0
-        self.java_parser = _build_java_parser()
+        self.java_parser = JAVA_PARSER
 
     def _mean_pool_ast_nodes(self, ast_nodes: list[str]) -> np.ndarray | None:
         """Convert AST nodes into one pooled embedding vector."""
