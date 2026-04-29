@@ -22,7 +22,7 @@ import tree_sitter_java as tsjava
 
 def _build_java_parser() -> Parser:
     """Create a Java parser instance for AST extraction."""
-    java_language = Language(tsjava.language())
+    java_language = tsjava.language()
     parser = Parser()
     parser.language = java_language
     return parser
