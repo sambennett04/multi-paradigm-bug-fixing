@@ -7,4 +7,4 @@ faiss-cpu
 gensim
 tree-sitter==0.21.3
 tree-sitter-languages
-codebleu
+codebleu==0.3.0
