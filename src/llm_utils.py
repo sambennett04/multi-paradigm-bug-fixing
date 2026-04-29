@@ -443,15 +443,3 @@ def generate_code(user_task: str, llm_config: LLMConfig, mode: Literal["zero_sho
         generations.append(_extract_code(decoded))
 
     return generations
-
-
-__all__ = [
-    "Code2VecEmbedder",
-    "LLMConfig",
-    "build_FAISS_index",
-    "generate_code",
-    "load_knowledge_base",
-    "load_qwen_generator",
-    "save_knowledge_base",
-    "train_embedding_model_and_generate_embeddings",
-]
