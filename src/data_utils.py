@@ -82,3 +82,11 @@ def load_finetuning_data(finetuning_save_path):
         return []
 
     return json.loads(finetuning_text)
+
+def fetch_test_data_hugging_face():
+    test_split = load_dataset("google/code_x_glue_cc_code_refinement", name="medium", split="test")
+    test_pairs = [[example["buggy"], example["fixed"]] for example in test_split]
+
+    print(f"Loaded {len(test_pairs)} test buggy/fixed pairs.")
+
+    return test_pairs

@@ -7,3 +7,4 @@ faiss-cpu
 gensim
 tree-sitter
 tree-sitter-java
+codebleu
